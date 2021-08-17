@@ -24,10 +24,10 @@ add_odla_library(odla_popart SHARED common.cc odla_compute.cc
                 )
 
 if (NOT POPLAR_ROOT)
-  set(POPLAR_ROOT "/opt/poplar_sdk/poplar" CACHE PATH "Path of poplar root")
+  set(POPLAR_ROOT "/host/sdk2.1/poplar" CACHE PATH "Path of poplar root")
 endif()
 if (NOT POPART_ROOT)
-  set(POPART_ROOT "/opt/poplar_sdk/popart" CACHE PATH "Path of popart root")
+  set(POPART_ROOT "/host/sdk2.1/popart" CACHE PATH "Path of popart root")
 endif()
 set(POPLAR_ROOT ${POPLAR_ROOT} PARENT_SCOPE)
 set(POPART_ROOT ${POPART_ROOT} PARENT_SCOPE)
