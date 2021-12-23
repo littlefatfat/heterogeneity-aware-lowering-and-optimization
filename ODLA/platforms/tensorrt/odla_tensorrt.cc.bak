@@ -34,7 +34,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "ODLA/odla_common.h"
 #include "common.h"
 #include "plugins/initPlugin.h"
 
@@ -184,9 +183,9 @@ struct _odla_computation {
   bool fp16_mode = false;
 
   bool is_dynamic_batch = false;
-  int min_batch_size = 1;
-  int max_batch_size = 1;
-  int opt_batch_size = 1;
+  int min_batch_size = 0;
+  int max_batch_size = 0;
+  int opt_batch_size = 0;
   bool load_engine_mode = false;
   size_t max_workspace_size = MAX_WORKSPACE_SIZE_BYTES;
 
@@ -244,16 +243,14 @@ struct _odla_context {
     if (!comp->load_engine_mode) {
       builder_cfg = trt_shared_obj(comp->builder->createBuilderConfig());
 
-      if (true || comp->is_dynamic_batch) {
+      if (comp->is_dynamic_batch) {
         builder_profile = comp->builder->createOptimizationProfile();
         for (auto& input : comp->inputs) {
           const char* input_name = input.first.c_str();
           odla_value value = input.second;
-          int d1 = 3;    // value->type.shape.dims[1];
-          int d2 = 960;  // value->type.shape.dims[2];
-          int d3 = 1280; // value->type.shape.dims[3];
-          // int d2 = 32;  // 960;  // value->type.shape.dims[2];
-          // int d3 = 665; // 1280; // value->type.shape.dims[3];
+          int d1 = value->type.shape.dims[1];
+          int d2 = value->type.shape.dims[2];
+          int d3 = value->type.shape.dims[3];
           builder_profile->setDimensions(
               input_name, OptProfileSelector::kMIN,
               Dims{4, {comp->min_batch_size, d1, d2, d3}});
@@ -459,6 +456,9 @@ static odla_value CreateValue(T* t, const odla_value_type& type,
   auto v = std::make_unique<_odla_value>(t, type, name);
   auto ret = v.get();
   g_comp->vals.push_back(std::move(v));
+  if (!g_comp->branchs.empty()) {
+    g_comp->branchs.top().branch->addInput(*ret);
+  }
   return ret;
 }
 
@@ -680,15 +680,8 @@ odla_status odla_BindToArgument(odla_value value, const odla_void* data_ptr,
                                 odla_context context) {
   odla_value_shape real_shape = value->type.shape;
   bool dynamic_input_size = false;
-  if (true || (g_comp && g_comp->is_dynamic_batch) || context->run_batch_size) {
-    real_shape.dims[0] = 1;
-    //    context->run_batch_size;
-    real_shape.dims[1] = 3;
-    real_shape.dims[2] = 960;
-    real_shape.dims[3] = 1280;
-    // real_shape.dims[2] = 32;
-    // real_shape.dims[3] = 665;
-
+  if ((g_comp && g_comp->is_dynamic_batch) || context->run_batch_size) {
+    real_shape.dims[0] = context->run_batch_size;
     dynamic_input_size = true;
   }
   size_t bytes =
@@ -720,12 +713,8 @@ odla_status odla_BindToArgumentById(const odla_value_id value_id,
 odla_status odla_BindToOutput(odla_value value, odla_void* data_ptr,
                               odla_context context) {
   odla_value_shape real_shape = value->type.shape;
-  if (true || (g_comp && g_comp->is_dynamic_batch) || context->run_batch_size) {
-    real_shape.dims[0] = 1;
-    real_shape.dims[1] = 1;
-    // real_shape.dims[2] = 5531;
-    real_shape.dims[2] = 960;
-    real_shape.dims[3] = 1280;
+  if ((g_comp && g_comp->is_dynamic_batch) || context->run_batch_size) {
+    real_shape.dims[0] = context->run_batch_size;
   }
   size_t bytes =
       GetTotalElements(real_shape) * GetElementSize(value->type.element_type);
@@ -1315,34 +1304,14 @@ odla_value odla_PRelu(odla_value input, odla_value slope,
   return odla_Add(relu, neg_prelu, value_id);
 }
 
-static const int s2[] = {1, 1, 2, 2};
-static const int s4[] = {1, 1, 4, 4};
-static const int s8[] = {1, 1, 8, 8};
-
 odla_value odla_Resize(odla_value input, odla_interpolation_mode interpolation,
                        odla_resize_coordinate_mode mode, odla_uint32 axes_mask,
                        odla_value_shape output_dims,
                        const odla_value_id value_id) {
   assert(interpolation == ODLA_NEAREST);
   auto resize = g_comp->network->addResize(*input);
-  auto shape = g_comp->network->addShape(*input)->getOutput(0);
-  const int* scale = s2;
-  const std::string id((const char*)value_id);
-  if (id == "val_788") {
-    scale = s4;
-  }
-  if (id == "val_799") {
-    scale = s8;
-  }
-  auto two = odla_CreateConstant(
-      odla_value_type{ODLA_INT32, odla_value_shape{1, {4}}}, scale, nullptr);
-  auto new_shape =
-      g_comp->network
-          ->addElementWise(*shape, *two, nvinfer1::ElementWiseOperation::kPROD)
-          ->getOutput(0);
-  resize->setInput(1, *new_shape);
   resize->setResizeMode(nvinfer1::ResizeMode::kNEAREST);
-  // resize->setOutputDimensions(GetNVDims(output_dims));
+  resize->setOutputDimensions(GetNVDims(output_dims));
   return CreateValue(resize, {input->type.element_type, output_dims}, value_id);
 }
 
@@ -2068,72 +2037,19 @@ odla_values odla_LSTM(odla_value input, odla_rnn_weight_format weight_format,
   const auto rnn_dir = (direction == ODLA_RNN_BIDIRECTIONAL)
                            ? nvinfer1::RNNDirection::kBIDIRECTION
                            : nvinfer1::RNNDirection::kUNIDIRECTION;
-  bool is_dynamic_seq = seq_size < 0;
-  int max_seq_size = is_dynamic_seq ? 256 : seq_size;
 
   auto input_t = input->tensor;
   // input layout [seq, batch, input]
-
-  // pad to [max_seq, batch, input]
-  {
-    std::string name((const char*)value_id.value_ids[0]);
-
-    auto name_seq = name + "_seq";
-    auto name_shape = name + "_shape";
-
-    auto input_shape_tensor = odla_Shape(input, {.size = 1, {3}},
-                                         (odla_value_id)(name_shape.c_str()));
-
-    auto max_seq_tensor = odla_CreateConstant(
-        odla_value_type{ODLA_INT32, odla_value_shape{1, {1}}}, &max_seq_size,
-        nullptr);
-    auto actual_seq_tensor =
-        odla_Slice(input_shape_tensor, (const odla_int32[]){0},
-                   (const odla_int32[]){1}, (const odla_int32[]){1},
-                   {.size = 1, {1}}, (odla_value_id)name_seq.c_str());
-    auto diff = odla_Sub(max_seq_tensor, actual_seq_tensor, nullptr);
-    int32_t vals[] = {1, 288};
-    auto bi = odla_CreateConstant(
-        odla_value_type{ODLA_INT32, odla_value_shape{1, {2}}}, vals, nullptr);
-    ITensor* new_shape[] = {diff->tensor, bi->tensor};
-    auto padding_shape = g_comp->network->addConcatenation(new_shape, 2);
-    auto fill = g_comp->network->addFill(
-        nvinfer1::Dims{1, {1}}, nvinfer1::FillOperation::kRANDOM_UNIFORM);
-    fill->setInput(0, *padding_shape->getOutput(0));
-    auto ax = fill->getDimensions();
-    std::cout << ax.nbDims;
-    ITensor* new_inputs[] = {input_t, fill->getOutput(0)};
-    auto cat0 = g_comp->network->addConcatenation(new_inputs, 2);
-    cat0->setName("KKKKe");
-    input_t = cat0->getOutput(0);
-  }
-
   // trt assume [batch, seq, input]
   auto transpose_layer = g_comp->network->addShuffle(*input_t);
   nvinfer1::Permutation perm{1, 0, 2};
   transpose_layer->setFirstTranspose(perm);
   transpose_layer->setReshapeDimensions(
-      nvinfer1::Dims{3, {batch_size, max_seq_size, input_size}});
-  transpose_layer->setZeroIsPlaceholder(true);
-
+      nvinfer1::Dims{3, {batch_size, seq_size, input_size}});
   input_t = transpose_layer->getOutput(0);
   nvinfer1::IRNNv2Layer* rnn_layer =
-      g_comp->network->addRNNv2(*input_t, num_layers, hidden_size, max_seq_size,
+      g_comp->network->addRNNv2(*input_t, num_layers, hidden_size, seq_size,
                                 nvinfer1::RNNOperation::kLSTM);
-
-  if (is_dynamic_seq) {
-    std::string name((const char*)value_id.value_ids[0]);
-    auto name_seq = name + "_seq";
-    auto name_shape = name + "_shape";
-
-    auto shape = g_comp->network->addShape(*input)->getOutput(0);
-    auto actual_seq_size = odla_Slice(
-        odla_Shape(input, {.size = 1, {3}}, (odla_value_id)name_shape.c_str()),
-        (const odla_int32[]){0}, (const odla_int32[]){1},
-        (const odla_int32[]){1}, {.size = 1, {1}},
-        (odla_value_id)name_seq.c_str());
-    rnn_layer->setSequenceLengths(*actual_seq_size);
-  }
   rnn_layer->setDirection(rnn_dir);
 
   // prepare initial hidden and initial cell
@@ -2186,8 +2102,7 @@ odla_values odla_LSTM(odla_value input, odla_rnn_weight_format weight_format,
     }
   }
 
-  // Bias shape [dir, 4 * hidden_size] or [dir, 8 *
-  // hidden_size]
+  // Bias shape [dir, 4 * hidden_size] or [dir, 8 * hidden_size]
   assert(B && B->const_layer);
   bool combined_bias = (B->type.shape.dims[1] == num_gates * hidden_size);
   nvinfer1::Weights bias_w = B->const_layer->getWeights();
@@ -2223,9 +2138,8 @@ odla_values odla_LSTM(odla_value input, odla_rnn_weight_format weight_format,
   }
 
   // TRT result layout transformation
-  // [0]: [seq, batch, dir, hidden]  --> [seq, dir, batch,
-  // hidden] [1] [2] : [batch, dir, hidden]  --> [dir, batch,
-  // hidden]
+  // [0]: [seq, batch, dir, hidden]  --> [seq, dir, batch, hidden]
+  // [1] [2] : [batch, dir, hidden]  --> [dir, batch, hidden]
   nvinfer1::ITensor* transformed_rnn[3]{rnn_layer->getOutput(0),
                                         rnn_layer->getOutput(1),
                                         rnn_layer->getOutput(2)};
