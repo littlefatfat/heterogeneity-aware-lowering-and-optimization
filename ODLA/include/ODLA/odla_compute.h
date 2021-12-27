@@ -44,6 +44,14 @@ typedef enum {
   ODLA_MAX_BATCH_SIZE,
   ODLA_OPT_BATCH_SIZE,
   ODLA_RUN_BATCH_SIZE,
+  ODLA_DYNAMIC_SHAPE,
+  ODLA_DYNAMIC_SHAPE_INPUTS,
+  ODLA_DYNAMIC_SHAPE_OUTPUTS,
+  ODLA_MIN_SHAPE,
+  ODLA_MAX_SHAPE,
+  ODLA_OPT_SHAPE,
+  ODLA_RUN_INPUT_SHAPE,
+  ODLA_RUN_OUTPUT_SHAPE,
   ODLA_BF16_MODE,
   ODLA_FP16_MODE,
   ODLA_USE_SIM_MODE,
@@ -219,6 +227,20 @@ odla_DestroyComputation(odla_computation computation);
 */
 extern ODLA_API_EXPORT odla_status ODLA_API_CALL odla_SetComputationItem(
     odla_computation computation, odla_item_type type, odla_item_value value);
+
+//! \brief Set the computation with a property item
+/*!
+  \param computation the computation object
+  \param type the property item type
+  \param value_shape the property value_shape
+  \param value the odla_value
+
+
+  \return odla_status
+*/
+extern ODLA_API_EXPORT odla_status ODLA_API_CALL
+odla_SetComputationItemShape(odla_computation computation, odla_item_type type,
+                             odla_value_shape value_shape, odla_value value);
 
 //! \brief Create a constants array object
 /*!
@@ -397,6 +419,20 @@ odla_CreateContext(odla_context* context);
 */
 extern ODLA_API_EXPORT odla_status ODLA_API_CALL odla_SetContextItem(
     odla_context context, odla_item_type type, odla_item_value value);
+
+//! \brief Set the context with a property item
+/*!
+  \param context the context object
+  \param type the property item type
+  \param value_shape the property item value_shape
+  \param value_id the property item value_id
+
+
+  \return odla_status
+*/
+extern ODLA_API_EXPORT odla_status ODLA_API_CALL odla_SetContextItemShape(
+    odla_context context, odla_item_type type, odla_value_shape value_shape,
+    const odla_value_id value_id);
 
 //! \brief Destroy a created context
 /*!
