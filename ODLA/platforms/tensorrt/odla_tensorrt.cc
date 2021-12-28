@@ -33,6 +33,7 @@
 #include <numeric>
 #include <stack>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ODLA/odla_common.h"
@@ -193,8 +194,9 @@ struct _odla_computation {
 
   // mry
   bool is_dynamic_shape = false;
-  std::vector<odla_value> dynamic_shape_inputs; // unorderd_set count mrytodo
-  std::vector<odla_value> dynamic_shape_outputs;
+  // unorderd_set count mrytodo
+  std::unordered_set<odla_value> dynamic_shape_inputs;
+  std::unordered_set<odla_value> dynamic_shape_outputs;
   std::unordered_map<odla_value, odla_value_shape> inputs_min_shapes;
   std::unordered_map<odla_value, odla_value_shape> inputs_max_shapes;
   std::unordered_map<odla_value, odla_value_shape> inputs_opt_shapes;
@@ -263,9 +265,7 @@ struct _odla_context {
 
   int run_batch_size = 0;
 
-  // mrytodo use one depend on me
-  std::unordered_map<odla_value, odla_value_shape> inputs_real_shape;
-  std::unordered_map<odla_value, odla_value_shape> outputs_real_shape;
+  std::unordered_map<odla_value, odla_value_shape> real_shapes;
 
   _odla_context(odla_computation comp) : comp(comp) {
     if (!comp->load_engine_mode) {
@@ -578,15 +578,19 @@ odla_status odla_SetComputationItem(odla_computation computation,
       if (is_dynamic_shape &&
           (computation->is_dynamic_shape != is_dynamic_shape)) {
         computation->is_dynamic_shape = is_dynamic_shape;
-        // if (!computation->load_engine_mode) {
-        //   computation->network.reset();
-        //   nvinfer1::NetworkDefinitionCreationFlags flags =
-        //       1U << static_cast<uint32_t>(
-        //           nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
-        //   computation->network =
-        //       trt_shared_obj(computation->builder->createNetworkV2(flags));
-        // }
       }
+      break;
+
+    case ODLA_DYNAMIC_SHAPE_INPUTS: // mry
+      odla_value input;
+      input = *reinterpret_cast<odla_value*>(value);
+      computation->dynamic_shape_inputs.insert(input);
+      break;
+
+    case ODLA_DYNAMIC_SHAPE_OUTPUTS:
+      odla_value output;
+      output = *reinterpret_cast<odla_value*>(value);
+      computation->dynamic_shape_outputs.insert(output);
       break;
 
     case ODLA_MIN_BATCH_SIZE:
@@ -620,31 +624,19 @@ odla_status odla_SetComputationItem(odla_computation computation,
   return ODLA_SUCCESS;
 }
 
-// mry
-odla_status odla_SetComputationItemShape(odla_computation computation,
-                                         odla_item_type type,
-                                         odla_value_shape value_shape,
-                                         odla_value input) {
+odla_status odla_SetValueShapeInfo(odla_value value, odla_item_type type,
+                                   odla_value_shape value_shape) {
   switch (type) {
-    case ODLA_DYNAMIC_SHAPE_INPUTS:
-      computation->dynamic_shape_inputs.push_back(input);
-      break;
-
-    case ODLA_DYNAMIC_SHAPE_OUTPUTS:
-      computation->dynamic_shape_outputs.push_back(
-          input); // todo input? or value ?
-      break;
-
     case ODLA_MIN_SHAPE:
-      computation->inputs_min_shapes[input] = value_shape;
+      g_comp->inputs_min_shapes[value] = value_shape;
       break;
 
     case ODLA_MAX_SHAPE:
-      computation->inputs_max_shapes[input] = value_shape;
+      g_comp->inputs_max_shapes[value] = value_shape;
       break;
 
     case ODLA_OPT_SHAPE:
-      computation->inputs_opt_shapes[input] = value_shape;
+      g_comp->inputs_opt_shapes[value] = value_shape;
       break;
 
     default:
@@ -653,6 +645,16 @@ odla_status odla_SetComputationItemShape(odla_computation computation,
   }
 
   return ODLA_SUCCESS;
+}
+
+odla_status odla_SetRuntimeShape(odla_context context, odla_value value,
+                                 odla_value_shape value_shape) {
+  context->real_shapes[value] = value_shape;
+}
+
+odla_status odla_GetRuntimeShape(odla_context context, odla_value value,
+                                 odla_value_shape* value_shape_ptr) {
+  *value_shape_ptr = context->real_shapes[value];
 }
 
 odla_status odla_SetContextItem(odla_context context, odla_item_type type,
@@ -660,33 +662,6 @@ odla_status odla_SetContextItem(odla_context context, odla_item_type type,
   switch (type) {
     case ODLA_RUN_BATCH_SIZE:
       context->run_batch_size = *(reinterpret_cast<int*>(value));
-      break;
-
-    default:
-      std::cerr << "Unsupported property type: " << type << std::endl;
-      return ODLA_FAILURE;
-  }
-
-  return ODLA_SUCCESS;
-}
-
-// mry  todo const?
-// status = odla_SetContextItem(Ctx, ODLA_RUN_INPUT_SHAPE,
-//                              (odla_item_value)&input0_real_shape, input0);
-odla_status odla_SetContextItemShape(odla_context context, odla_item_type type,
-                                     odla_value_shape value_shape,
-                                     const odla_value_id value_id) {
-  std::string name((const char*)value_id);
-  switch (type) {
-    case ODLA_RUN_INPUT_SHAPE:
-      context->inputs_real_shape[context->comp->inputs[name]] = value_shape;
-      break;
-
-    case ODLA_RUN_OUTPUT_SHAPE:
-      // odla_value output = context->comp->outputs[name];   // crosses
-      // FAILED  initialization of '_odla_value* input'
-      // context->outputs_real_shape[output] = value_shape;
-      context->outputs_real_shape[context->comp->outputs[name]] = value_shape;
       break;
 
     default:
@@ -790,23 +765,14 @@ odla_status odla_GetOutputFromComputationByIdx(
 odla_status odla_BindToArgument(odla_value value, const odla_void* data_ptr,
                                 odla_context context) {
   odla_value_shape real_shape = value->type.shape;
-  bool dynamic_input_size = false;
   if ((g_comp && g_comp->is_dynamic_batch) || context->run_batch_size) {
     real_shape.dims[0] = context->run_batch_size;
   }
   if (g_comp && g_comp->is_dynamic_shape) {
-    // real_shape.dims[0] = 1;
-    // real_shape.dims[1] = 3;
-    // real_shape.dims[2] = 960;
-    // real_shape.dims[3] = 1280;
-    auto it = std::find(g_comp->dynamic_shape_inputs.begin(),
-                        g_comp->dynamic_shape_inputs.end(), value);
-
-    if (it != g_comp->dynamic_shape_inputs.end()) {
-      real_shape = context->inputs_real_shape[value];
+    if (g_comp->dynamic_shape_inputs.find(value) !=
+        g_comp->dynamic_shape_inputs.end()) {
+      real_shape = context->real_shapes[value];
     }
-
-    dynamic_input_size = true; // todo ???
   }
   size_t bytes =
       GetTotalElements(real_shape) * GetElementSize(value->type.element_type);
@@ -842,10 +808,9 @@ odla_status odla_BindToOutput(odla_value value, odla_void* data_ptr,
   }
 
   if (g_comp && g_comp->is_dynamic_shape) {
-    auto it = find(g_comp->dynamic_shape_outputs.begin(),
-                   g_comp->dynamic_shape_outputs.end(), value);
-    if (it != g_comp->dynamic_shape_outputs.end()) {
-      real_shape = context->outputs_real_shape[value];
+    if (g_comp->dynamic_shape_outputs.find(value) !=
+        g_comp->dynamic_shape_outputs.end()) {
+      real_shape = context->real_shapes[value];
     }
   }
   size_t bytes =
@@ -1099,7 +1064,7 @@ odla_status odla_ExecuteComputation(odla_computation comp, odla_context context,
     for (auto& input_ptr : context->input_ptrs) {
       int idx = context->engine->getBindingIndex(input_ptr.first.c_str());
       nvinfer1::Dims dims = context->ctx->getBindingDimensions(idx);
-      dims.d[0] = context->run_batch_size; // mrytodo
+      dims.d[0] = context->run_batch_size;
       context->ctx->setBindingDimensions(idx, dims);
     }
     CHECK(context->ctx->executeV2(buffers.data()));
@@ -1109,14 +1074,18 @@ odla_status odla_ExecuteComputation(odla_computation comp, odla_context context,
 
       auto id = input_ptr.first;
       odla_value value = context->comp->inputs[id];
-      auto it = std::find(context->comp->dynamic_shape_inputs.begin(),
-                          context->comp->dynamic_shape_inputs.end(), value);
-      if (it != g_comp->dynamic_shape_inputs.end()) {
-        odla_value_shape real_shape = context->inputs_real_shape[value];
-        nvinfer1::Dims nvdims = GetNVDims(real_shape);
 
+      if (comp->dynamic_shape_inputs.find(value) !=
+          comp->dynamic_shape_inputs.end()) {
+        odla_value_shape real_shape = context->real_shapes[value];
+        nvinfer1::Dims nvdims = GetNVDims(real_shape);
         context->ctx->setBindingDimensions(idx, nvdims);
       }
+      // if (it != g_comp->dynamic_shape_inputs.end()) {
+      //   odla_value_shape real_shape = context->real_shapes[value];
+      //   nvinfer1::Dims nvdims = GetNVDims(real_shape);
+      //   context->ctx->setBindingDimensions(idx, nvdims);
+      // }
     }
     CHECK(context->ctx->executeV2(buffers.data()));
   } else {

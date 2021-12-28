@@ -50,8 +50,6 @@ typedef enum {
   ODLA_MIN_SHAPE,
   ODLA_MAX_SHAPE,
   ODLA_OPT_SHAPE,
-  ODLA_RUN_INPUT_SHAPE,
-  ODLA_RUN_OUTPUT_SHAPE,
   ODLA_BF16_MODE,
   ODLA_FP16_MODE,
   ODLA_USE_SIM_MODE,
@@ -228,19 +226,38 @@ odla_DestroyComputation(odla_computation computation);
 extern ODLA_API_EXPORT odla_status ODLA_API_CALL odla_SetComputationItem(
     odla_computation computation, odla_item_type type, odla_item_value value);
 
-//! \brief Set the computation with a property item
+//! \brief Set the computation arguments shape info with a property item
 /*!
-  \param computation the computation object
+  \param value the odla_value
   \param type the property item type
   \param value_shape the property value_shape
-  \param value the odla_value
-
 
   \return odla_status
 */
-extern ODLA_API_EXPORT odla_status ODLA_API_CALL
-odla_SetComputationItemShape(odla_computation computation, odla_item_type type,
-                             odla_value_shape value_shape, odla_value value);
+extern ODLA_API_EXPORT odla_status ODLA_API_CALL odla_SetValueShapeInfo(
+    odla_value value, odla_item_type type, odla_value_shape value_shape);
+
+//! \brief Set the context runtime shapes to an odla_value
+/*!
+  \param context the context object
+  \param value the property odla value
+  \param value_shape the property value_shape
+
+  \return odla_status
+*/
+extern ODLA_API_EXPORT odla_status ODLA_API_CALL odla_SetRuntimeShape(
+    odla_context context, odla_value value, odla_value_shape value_shape);
+
+//! \brief Get the context runtime shapes
+/*!
+  \param context the context object
+  \param value the property odla value
+  \param value_shape_ptr the pointer to the value_shape
+
+  \return odla_status
+*/
+extern ODLA_API_EXPORT odla_status ODLA_API_CALL odla_GetRuntimeShape(
+    odla_context context, odla_value value, odla_value_shape* value_shape_ptr);
 
 //! \brief Create a constants array object
 /*!
@@ -419,20 +436,6 @@ odla_CreateContext(odla_context* context);
 */
 extern ODLA_API_EXPORT odla_status ODLA_API_CALL odla_SetContextItem(
     odla_context context, odla_item_type type, odla_item_value value);
-
-//! \brief Set the context with a property item
-/*!
-  \param context the context object
-  \param type the property item type
-  \param value_shape the property item value_shape
-  \param value_id the property item value_id
-
-
-  \return odla_status
-*/
-extern ODLA_API_EXPORT odla_status ODLA_API_CALL odla_SetContextItemShape(
-    odla_context context, odla_item_type type, odla_value_shape value_shape,
-    const odla_value_id value_id);
 
 //! \brief Destroy a created context
 /*!
