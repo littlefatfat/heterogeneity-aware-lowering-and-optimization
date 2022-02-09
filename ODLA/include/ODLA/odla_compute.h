@@ -183,6 +183,18 @@ odla_GetArgFromComputationByIdx(const odla_computation computation,
                                 const odla_uint32 arg_idx,
                                 odla_value* arg_value);
 
+//! \brief Get an argument value from a computation by id
+/*!
+  \param computation the computation object
+  \param value_id the value id for the argument
+  \param arg_value the pointer to the retrieved argument value
+
+  \return odla_status
+*/
+extern ODLA_API_EXPORT odla_status ODLA_API_CALL odla_GetArgFromComputationById(
+    const odla_computation computation, const odla_value_id value_id,
+    odla_value* arg_value);
+
 //! \brief Get the number of outputs from a computation
 /*!
   \param computation the computation object

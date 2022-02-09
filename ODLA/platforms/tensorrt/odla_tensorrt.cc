@@ -720,6 +720,19 @@ odla_status odla_GetArgFromComputationByIdx(const odla_computation computation,
   return ODLA_SUCCESS;
 }
 
+odla_status odla_GetArgFromComputationById(const odla_computation computation,
+                                           const odla_value_id value_id,
+                                           odla_value* arg_value) {
+  *arg_value = nullptr;
+  std::string name((const char*)value_id);
+  if (computation->inputs.find(name) != computation->inputs.end()) {
+    *arg_value = computation->inputs[name];
+    return ODLA_SUCCESS;
+  } else {
+    return ODLA_FAILURE;
+  }
+}
+
 odla_value odla_CreateConstant(odla_value_type type, const void* ptr,
                                const odla_value_id id) {
   void* host_ptr = const_cast<void*>(ptr);

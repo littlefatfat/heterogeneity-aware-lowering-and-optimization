@@ -67,7 +67,7 @@ class ODLAModel:
             if self.comp:
                 self.h.odla_DestroyComputation(self.comp)
 
-    def Load(self):
+    def Load(self, dynamic_shape):
         if self.h is None:
             self.h = CDLL(self.so_file)
         self.comp = c_void_p(0)
@@ -75,7 +75,7 @@ class ODLAModel:
 
         # # TODO:
         # use_sim = c_bool(True)
-        # self.h.odla_SetComputationItem(self.comp, 7, pointer(use_sim))    # 7 ??? mry
+        # self.h.odla_SetComputationItem(self.comp, ODLA_USE_SIM_MODE, pointer(use_sim))    # 7 ??? mry
 
         self.h.model_helper(self.comp)
         n = c_int32(-1)
@@ -86,73 +86,49 @@ class ODLAModel:
         self.h.odla_GetNumOfOutputsFromComputation(self.comp, pointer(n))
         self.nr_outputs = n.value
 
+        print(dynamic_shape)
+        if dynamic_shape:
+            is_dynamic_shape = c_bool(True)
+            self.h.odla_SetComputationItem(self.comp, ODLA_DYNAMIC_SHAPE, pointer(is_dynamic_shape))
 
+            for (value_id, shape_info) in dynamic_shape.items():
 
+                input0_id = c_char_p(value_id.encode("utf-8"))
+                input0_v = c_void_p(0)
+                self.h.odla_GetArgFromComputationById(self.comp, input0_id, pointer(input0_v))
 
+                min_shape = shape_info['min_shape']
+                max_shape = shape_info['max_shape']
+                opt_shape = shape_info['opt_shape']
 
+                dims_array = c_int64 * 10
+                input0_min_shape = ValueShape(c_int32(len(min_shape)), dims_array(*min_shape))
+                input0_max_shape = ValueShape(c_int32(len(max_shape)), dims_array(*max_shape))
+                input0_opt_shape = ValueShape(c_int32(len(opt_shape)), dims_array(*opt_shape))
+                self.h.odla_SetValueShapeInfo(input0_v, ODLA_MIN_SHAPE, input0_min_shape)
+                self.h.odla_SetValueShapeInfo(input0_v, ODLA_MAX_SHAPE, input0_max_shape)
+                self.h.odla_SetValueShapeInfo(input0_v, ODLA_OPT_SHAPE, input0_opt_shape)
 
-
-
-
-
-
-        # self.in_vals = []
-        # for idx in range(0, self.nr_args):
-        #     arg_v = c_void_p(0)
-        #     self.h.odla_GetArgFromComputationByIdx(self.comp, idx, pointer(arg_v))
-        #     vt = ValueType()
-        #     self.h.odla_GetValueType(arg_v, pointer(vt))
-        #     self.in_vals.append((arg_v.value, vt))
-
-            # mry todo bindargs
-
-
-
-        # if not is_dynamic_shape
-        # self.out_vals = []
-        # for idx in range(0, self.nr_outputs):
-        #     out = c_void_p(0)
-        #     self.h.odla_GetOutputFromComputationByIdx(self.comp, idx, pointer(out))
-        #     vt = ValueType()
-        #     self.h.odla_GetValueType(out, pointer(vt))
-        #     n = 1
-        #     for r in range(0, vt.shape.size):
-        #         n *= vt.shape.dims[r]
-        #     self.out_vals.append((out, vt, n))
-        #     buf = (c_float * n)() # FIXME: handle types
-        #     self.h.odla_BindToOutput(out, buf, self.ctx)
-        #     self.buffers.append(buf)
-
-    
-
-
-
-
-    def Execute(self, data):
-
-        # mry if not is_dynamic_shape ?? load的时候传入data？
-
-        # mry if is_dynamic_shape
-        input0_idx = 0
-        input0_v = c_void_p(0)
-        is_dynamic_shape = c_bool(True)
-        dims_array = c_int64 * 10
-        input0_min_shape = ValueShape(c_int32(4), dims_array(1, 3, 1, 1))
-        input0_max_shape = ValueShape(c_int32(4), dims_array(1, 3, 1000, 2000))
-        input0_opt_shape = ValueShape(c_int32(4), dims_array(1, 3, 960, 1280))
-
-        self.h.odla_GetArgFromComputationByIdx(self.comp, input0_idx, pointer(input0_v))
-        self.h.odla_SetComputationItem(self.comp, ODLA_DYNAMIC_SHAPE, pointer(is_dynamic_shape))
-        self.h.odla_SetValueShapeInfo(input0_v, ODLA_MIN_SHAPE, input0_min_shape)
-        self.h.odla_SetValueShapeInfo(input0_v, ODLA_MAX_SHAPE, input0_max_shape)
-        self.h.odla_SetValueShapeInfo(input0_v, ODLA_OPT_SHAPE, input0_opt_shape)
+    def SetContext(self, runtime_shape):
 
         self.ctx = c_void_p(0)
         self.h.odla_CreateContext(pointer(self.ctx))
 
-        input0_real_shape = ValueShape(c_int32(4), dims_array(1, 3, 960, 1280))
-        self.h.odla_SetRuntimeShape(self.ctx, input0_v, input0_real_shape)
+        print(runtime_shape)
+        if runtime_shape:
+            for (value_id, shape_info) in runtime_shape.items():
 
+                input0_id = c_char_p(value_id.encode("utf-8"))
+                input0_v = c_void_p(0)
+                self.h.odla_GetArgFromComputationById(self.comp, input0_id, pointer(input0_v))
+
+                real_shape = shape_info['real_shape']
+                dims_array = c_int64 * 10
+                input0_real_shape = ValueShape(c_int32(len(real_shape)), dims_array(*real_shape))
+                self.h.odla_SetRuntimeShape(self.ctx, input0_v, input0_real_shape)
+
+
+    def Execute(self, data):
 
         self.in_vals = []
         for idx in range(0, self.nr_args):
@@ -160,13 +136,13 @@ class ODLAModel:
             self.h.odla_GetArgFromComputationByIdx(self.comp, idx, pointer(arg_v))
             vt = ValueType()
             self.h.odla_GetValueType(arg_v, pointer(vt))
-            self.in_vals.append((arg_v.value, vt))
+            # self.in_vals.append((arg_v.value, vt))
+            self.in_vals.append((arg_v, vt))
         for idx, v in enumerate(self.in_vals):
             self.h.odla_BindToArgument(
                 v[0], data[idx].ctypes.data_as(c_void_p), self.ctx
             )
 
-        # else if  is_dynamic_shape
         self.out_vals = []
         for idx in range(0, self.nr_outputs):
             out = c_void_p(0)
@@ -176,7 +152,7 @@ class ODLAModel:
             n = 1
             for r in range(0, vs.size):
                 n *= vs.dims[r]
-            self.out_vals.append((out, vt, n)) #mry todo vt->vs
+            self.out_vals.append((out, vt, n))
             buf = (c_float * n)() # FIXME: handle types
             self.h.odla_BindToOutput(out, buf, self.ctx)
             

@@ -22,6 +22,7 @@ from halo.inference import Inference
 import argparse
 from time import time
 import logging
+import json
 
 
 def test(
@@ -35,6 +36,7 @@ def test(
     ref_data_files,
     it,
     debug,
+    shape_json,
     log_level,
 ):
     import numpy as np
@@ -70,6 +72,15 @@ def test(
     print(f"Input data:{input_sizes} bytes")
     print(f"Output data:{output_sizes} bytes")
 
+
+    dynamic_shape = {}
+    runtime_shape = {}
+    if shape_json:
+        shape_dict = json.load(shape_json)
+        if "dynamic_shape" in shape_dict:
+            dynamic_shape = shape_dict["dynamic_shape"]
+            runtime_shape = shape_dict["runtime_shape"]
+
     service = Inference(
         model_file,
         input_shape,
@@ -78,6 +89,7 @@ def test(
         batch_size,
         format,
         debug,
+        dynamic_shape,
         log_level,
     )
     service.Initialize()
@@ -90,7 +102,7 @@ def test(
     ok = True
     for i in range(1, it + 1):
         s = time()
-        results = service.Run(inputs)
+        results = service.Run(inputs, runtime_shape)
         t = time()
         inference_times.append(t - s)
         logging.info(f"Overall iteration {i} inference time {(t-s)*1000:.2f} ms")
@@ -126,6 +138,7 @@ if __name__ == "__main__":
     parser.add_argument("--ref-output", "-r", nargs="+", type=open)
     parser.add_argument("--iteration", "-it", type=int, default=1)
     parser.add_argument("--debug", action="store_true", default=False)
+    parser.add_argument("--shape-json","-json", type=open)
     parser.add_argument(
         "-v",
         "--verbose",
@@ -134,9 +147,7 @@ if __name__ == "__main__":
         const=logging.INFO,
         default=logging.WARNING,
     )
-
     args = parser.parse_args()
-
     test(
         args.model.name,
         args.device,
@@ -148,5 +159,6 @@ if __name__ == "__main__":
         args.ref_output,
         args.iteration,
         args.debug,
+        args.shape_json,
         args.log_level,
     )
