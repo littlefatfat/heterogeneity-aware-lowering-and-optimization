@@ -214,9 +214,37 @@ static std::vector<Def> ConvertFill(const TFExtensionInst* ext,
   HLCHECK(ext->GetNumOfOperands() == 2);
   auto dims = ext->GetOperand(0);
   auto value = ext->GetOperand(1);
-  if (!IsA<Constant>(dims) || !IsA<Constant>(value)) {
+  // mry
+  if (!IsA<Constant>(value)) {
     return {};
   }
+  if (!IsA<Constant>(dims)) {
+    auto& dims_type = dims.GetType();
+    if (dims_type.IsValid()) {
+      // int rank = dims_type.GetTotalNumOfElements();
+      // ret_shape.resize(rank);
+      // for (int i = 0; i < rank; ++i) {
+      //   const auto& r = GetAvailIntegerResult(dims, i);
+      //   ret_shape[i] = r.second;
+
+      DataType value_dt = value.GetType().GetDataType();
+      builder->SetInsertAfter(ext);
+      auto randomuniform_inst =
+          builder->CreateRandomUniform(ext->GetName() + "_fill_ones", dims);
+      randomuniform_inst->SetDtype(value_dt);
+      randomuniform_inst->SetMinval(1.0);
+      randomuniform_inst->SetMaxval(1.0);
+      auto new_inst = builder->CreateMul(ext->GetName() + "_fill_mul", value,
+                                         *randomuniform_inst);
+      return {*new_inst};
+    }
+    return {};
+  }
+
+  // mryend
+  // if (!IsA<Constant>(dims) || !IsA<Constant>(value)) {
+  //   return {};
+  // }
   std::vector<int64_t> shape;
   Constant* dims_c = DynCast<Constant>(dims);
   const Type& dims_type = dims.GetType();
@@ -248,7 +276,8 @@ static std::vector<Def> ConvertFill(const TFExtensionInst* ext,
     case DataType::FLOAT16: {
       const void* raw_ptr = value_c->GetRawDataPtr();
       std::vector<int16_t> data(
-          data_size, *static_cast<const uint16_t*>(raw_ptr)); // NOLINT
+          data_size,
+          *static_cast<const uint16_t*>(raw_ptr)); // NOLINT
       c = cb.CreateConstant(ext->GetName(), new_type, data.data());
       break;
     }
@@ -259,7 +288,7 @@ static std::vector<Def> ConvertFill(const TFExtensionInst* ext,
     return {*c};
   }
   return {};
-}
+} // namespace halo
 
 static std::vector<Def> ConvertSize(const TFExtensionInst* ext,
                                     IRBuilder* builder) {
@@ -414,6 +443,8 @@ static std::vector<Def> ConvertStridedSlice(const TFExtensionInst* ext,
     int32_t strides_i = strides_c->GetData<int32_t>(i);
     int32_t dims_i = input.GetType().GetNumOfElementsInDim(i);
     auto index = 1 << i;
+    bool dynamic_stridedslice_i = false;
+
     if (end_i < 0) {
       end_i += dims_i;
     }
@@ -430,6 +461,9 @@ static std::vector<Def> ConvertStridedSlice(const TFExtensionInst* ext,
     if ((shrink_mask & index) != 0) {
       new_size.push_back(1);
     } else if ((end_mask & index) != 0 || ellipsis_cnt != 0) {
+      if ((dims_i == -1) && (new_begin.back() == 0) && (strides_i == 1)) {
+        dynamic_stridedslice_i = true;
+      }
       new_size.push_back((dims_i - new_begin.back()) / strides_i);
     } else {
       new_size.push_back((end_i - new_begin.back()) / strides_i);
@@ -437,7 +471,8 @@ static std::vector<Def> ConvertStridedSlice(const TFExtensionInst* ext,
     if (ellipsis_cnt > 0) {
       --ellipsis_cnt;
     }
-    HLCHECK(new_size.back() >= 0); // TF allows empty tensor
+    HLCHECK(new_size.back() >= 0 ||
+            dynamic_stridedslice_i); // TF allows empty tensor
     if (new_size.back() == 0) {
       empty_slice = true;
     }
@@ -558,6 +593,22 @@ static std::vector<Def> ConvertZerosLike(const TFExtensionInst* ext,
   const auto& op0_type = ext->GetOperand(0).GetType();
   if (!op0_type.IsValid()) {
     return {};
+  }
+  if (!op0_type.IsStaticShape()) {
+    builder->SetInsertAfter(ext);
+    auto zeroslike_shape_inst = builder->CreateShape(
+        ext->GetName() + "_fill_zeros_shape", ext->GetOperand(0));
+
+    auto zerosfill_inst = builder->CreateRandomUniform(
+        ext->GetName() + "_fill_zeros", *zeroslike_shape_inst);
+    // Todo:f32 int64
+    auto attr = ext->GetAttributes()[0].get();
+    HLCHECK(attr->GetName() == "dtype");
+    const auto& dst_type = attr->GetValueAsEnumDataType();
+    zerosfill_inst->SetDtype(dst_type);
+    zerosfill_inst->SetMinval(0);
+    zerosfill_inst->SetMaxval(0);
+    return {*zerosfill_inst};
   }
   DataType vt = FindAttributeValue<DataType>(*ext, "dtype", DataType::INVALID);
   vt = (vt == DataType::INVALID) ? op0_type.GetDataType() : vt;

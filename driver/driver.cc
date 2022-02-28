@@ -388,6 +388,7 @@ int main(int argc, char** argv) {
   }
 
   CXXCodeGenOpts cg_opts;
+  cg_opts.simplify_for_preprocess = Target.substr(0, 3) == "cxx";
   cg_opts.bf16_mode = OptBF16Mode;
   cg_opts.print_mem_stats = PrintMemStats;
   cg_opts.emit_value_reset = EmitValueReset;

@@ -1018,6 +1018,36 @@ static void RunOnInstruction(SliceInst* inst) {
           inst->GetResultType().GetTotalNumOfElements() > 0);
 }
 
+static void RunOnInstruction(SliceDynamicInst* inst) {
+  auto& input_type = inst->GetOperand(0).GetType();
+  auto slice_size = inst->GetOperand(2);
+
+  auto dims = input_type.GetNumOfDims();
+  if (!input_type.IsStaticShape() && !IsA<Constant>(slice_size)) {
+    auto ret_shape = input_type.GetDimSizes();
+    bool is_constant_len = true;
+    for (unsigned i = 0; i < dims && is_constant_len; ++i) {
+      if (ret_shape[i] == kDynamicBatchSize ||
+          ret_shape[i] == kDynamicShapeSize) {
+        continue;
+      }
+      const auto& c = GetAvailIntegerResult(slice_size, i);
+      is_constant_len &= c.first;
+      ret_shape[i] = c.second;
+    }
+    // if (is_constant_len) {
+    //   inst->GetResultsTypes()[0] =
+    //       halo::Type{input_type.GetDataType(), ret_shape};
+    // }
+    inst->GetResultsTypes()[0] =
+        halo::Type{input_type.GetDataType(), ret_shape};
+    return;
+  }
+  // auto ret_shape = size_type.GetDimSizes();
+  // inst->GetResultsTypes()[0] = halo::Type{input_type.GetDataType(),
+  // ret_shape};
+}
+
 static void RunOnInstruction(SplitInst* inst) {
   auto input = inst->GetOperand(1);
   auto split_dim = inst->GetOperand(0);
@@ -1067,16 +1097,52 @@ static void RunOnInstruction(StackInst* inst) {
   inst->GetResultsTypes()[0] = halo::Type{input0_type.GetDataType(), ret_shape};
 }
 
+// static void RunOnInstruction(RandomUniformInst* inst) {
+//   std::vector<int64_t> ret_shape;
+//   if (inst->GetNumOfOperands() > 0) {
+//     auto op0 = inst->GetOperand(0);
+//     if (!IsA<Constant>(op0.GetOwner())) {
+//       return;
+//     }
+//     Constant* c_shape = DynCast<Constant>(op0.GetOwner());
+//     for (size_t i = 0, e = op0.GetType().GetTotalNumOfElements(); i != e;
+//     ++i) {
+//       ret_shape.push_back(c_shape->GetData<int32_t>(i));
+//     }
+//   } else {
+//     const auto& attr_shape = inst->GetShape();
+//     for (size_t i = 0, e = attr_shape.size(); i != e; ++i) {
+//       ret_shape.push_back(attr_shape.at(i));
+//     }
+//   }
+//   inst->GetResultsTypes()[0] = halo::Type{DataType::FLOAT32, ret_shape};
+// }
+
 static void RunOnInstruction(RandomUniformInst* inst) {
   std::vector<int64_t> ret_shape;
   if (inst->GetNumOfOperands() > 0) {
     auto op0 = inst->GetOperand(0);
-    if (!IsA<Constant>(op0.GetOwner())) {
-      return;
+    // mry
+    auto& op0_type = op0.GetType();
+
+    if (!IsA<Constant>(op0) && op0_type.IsValid()) {
+      int rank = op0_type.GetTotalNumOfElements();
+      ret_shape.resize(rank);
+      for (int i = 0; i < rank; ++i) {
+        const auto& r = GetAvailIntegerResult(op0, i);
+        ret_shape[i] = r.second;
+      }
     }
-    Constant* c_shape = DynCast<Constant>(op0.GetOwner());
-    for (size_t i = 0, e = op0.GetType().GetTotalNumOfElements(); i != e; ++i) {
-      ret_shape.push_back(c_shape->GetData<int32_t>(i));
+    // mryend
+
+    else if (!IsA<Constant>(op0.GetOwner())) {
+      return;
+    } else {
+      Constant* c_shape = DynCast<Constant>(op0.GetOwner());
+      for (size_t i = 0, e = op0.GetType().GetTotalNumOfElements(); i != e;
+           ++i) {
+        ret_shape.push_back(c_shape->GetData<int32_t>(i));
+      }
     }
   } else {
     const auto& attr_shape = inst->GetShape();

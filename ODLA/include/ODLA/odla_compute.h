@@ -260,6 +260,11 @@ extern ODLA_API_EXPORT odla_status ODLA_API_CALL odla_SetRuntimeShape(
 extern ODLA_API_EXPORT odla_status ODLA_API_CALL odla_GetRuntimeShape(
     odla_context context, odla_value value, odla_value_shape* value_shape_ptr);
 
+// mry
+
+extern ODLA_API_EXPORT odla_value_shape ODLA_API_CALL
+odla_GetDimensions(odla_value value);
+
 //! \brief Create a constants array object
 /*!
   \param constants_array the pointer to the created constants array object

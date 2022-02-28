@@ -20,11 +20,23 @@
 
 namespace halo {
 
+// void GenericCXXCodeGen::RunOnInstruction(RandomUniformInst* inst) {
+//   const auto& ret_type = inst->GetResultType();
+
+//   CXXValue ret(inst->GetName(), TensorTypeToCXXType(ret_type, false));
+//   EmitODLACall(ret, "odla_Fill", ret_type, "ODLA_RandomUniform",
+//                inst->GetMinval(), inst->GetMaxval(), inst->GetSeed());
+//   ir_mapping_[*inst] = ret;
+// }
+
 void GenericCXXCodeGen::RunOnInstruction(RandomUniformInst* inst) {
+  const Def& input = inst->GetOperand(0);
+  CXXValue op0 = ir_mapping_[input];
+
   const auto& ret_type = inst->GetResultType();
 
   CXXValue ret(inst->GetName(), TensorTypeToCXXType(ret_type, false));
-  EmitODLACall(ret, "odla_Fill", ret_type, "ODLA_RandomUniform",
+  EmitODLACall(ret, "odla_Fill", op0, ret_type, "ODLA_RandomUniform",
                inst->GetMinval(), inst->GetMaxval(), inst->GetSeed());
   ir_mapping_[*inst] = ret;
 }

@@ -298,27 +298,60 @@ struct _odla_context {
         builder_cfg->addOptimizationProfile(builder_profile);
       }
 
+      // if (comp->is_dynamic_batch) {
+      //   builder_profile = comp->builder->createOptimizationProfile();
+      //   for (auto& input : comp->inputs) {
+      //     const char* input_name = input.first.c_str();
+      //     odla_value value = input.second;
+      //     int d1 = value->type.shape.dims[1];
+      //     int d2 = value->type.shape.dims[2];
+      //     int d3 = value->type.shape.dims[3];
+      //     builder_profile->setDimensions(
+      //         input_name, OptProfileSelector::kMIN,
+      //         Dims{4, {comp->min_batch_size, d1, d2, d3}});
+      //     builder_profile->setDimensions(
+      //         input_name, OptProfileSelector::kOPT,
+      //         Dims{4, {comp->opt_batch_size, d1, d2, d3}});
+      //     builder_profile->setDimensions(
+      //         input_name, OptProfileSelector::kMAX,
+      //         Dims{4, {comp->max_batch_size, d1, d2, d3}});
+      //   }
+      //   builder_cfg->addOptimizationProfile(builder_profile);
+      // }
+
+      // mry
       if (comp->is_dynamic_batch) {
         builder_profile = comp->builder->createOptimizationProfile();
         for (auto& input : comp->inputs) {
           const char* input_name = input.first.c_str();
           odla_value value = input.second;
+
+          if (value->type.shape.size == 0) {
+            continue;
+          }
+          int d0 = value->type.shape.dims[0];
+          if (d0 > 0) {
+            continue;
+          }
           int d1 = value->type.shape.dims[1];
           int d2 = value->type.shape.dims[2];
           int d3 = value->type.shape.dims[3];
           builder_profile->setDimensions(
               input_name, OptProfileSelector::kMIN,
-              Dims{4, {comp->min_batch_size, d1, d2, d3}});
+              Dims{value->type.shape.size, {comp->min_batch_size, d1, d2, d3}});
           builder_profile->setDimensions(
               input_name, OptProfileSelector::kOPT,
-              Dims{4, {comp->opt_batch_size, d1, d2, d3}});
+              Dims{value->type.shape.size, {comp->opt_batch_size, d1, d2, d3}});
           builder_profile->setDimensions(
               input_name, OptProfileSelector::kMAX,
-              Dims{4, {comp->max_batch_size, d1, d2, d3}});
+              Dims{value->type.shape.size, {comp->max_batch_size, d1, d2, d3}});
         }
         builder_cfg->addOptimizationProfile(builder_profile);
       }
-      builder_cfg->setMaxWorkspaceSize(comp->max_workspace_size);
+
+      // builder_cfg->setMaxWorkspaceSize(comp->max_workspace_size);
+      builder_cfg->setMaxWorkspaceSize(1ul * 1024 * 1024 * 1024 * 1024 *
+                                       1024); // mry
 
       if (comp->fp16_mode) {
         builder_cfg->setFlag(BuilderFlag::kFP16);
@@ -740,7 +773,18 @@ odla_value odla_CreateConstant(odla_value_type type, const void* ptr,
   auto c = g_comp->network->addConstant(GetNVDims(type.shape), weight);
   odla_value v = CreateValue(c->getOutput(0), ValidateValueType(type), id);
   v->const_layer = c;
+
+  // mry
+  auto dims_debug = v->tensor->getDimensions();          // mry
+  auto con_dims_debug = v->const_layer->getDimensions(); // mry
+
   return v;
+}
+
+odla_value_shape odla_GetDimensions(odla_value value) { // mry
+  nvinfer1::Dims nvdims = value->tensor->getDimensions();
+  auto shape = GetOdlaShape(nvdims);
+  return shape;
 }
 
 odla_status odla_SetValueAsOutput(const odla_value val) {
@@ -1146,11 +1190,17 @@ static odla_value binary_op(nvinfer1::ElementWiseOperation op, odla_value lhs,
                             odla_value rhs, const odla_value_id id) {
   nvinfer1::ITensor* lhs_tensor = lhs->tensor;
   nvinfer1::ITensor* rhs_tensor = rhs->tensor;
+  auto lhs_dims_debug = lhs_tensor->getDimensions(); // mry
+  auto rhs_dims_debug = rhs_tensor->getDimensions(); // mry
   const auto& dims_lhs = lhs->type.shape;
   const auto& dims_rhs = rhs->type.shape;
   auto out_dim =
       broadcastTensor(g_comp, lhs_tensor, rhs_tensor, dims_lhs, dims_rhs);
   auto sub = g_comp->network->addElementWise(*lhs_tensor, *rhs_tensor, op);
+  lhs_dims_debug = lhs_tensor->getDimensions();                // mry
+  rhs_dims_debug = rhs_tensor->getDimensions();                // mry
+  auto result_dims_debug = sub->getOutput(0)->getDimensions(); // mry
+
   for (int i = 0; i < out_dim.size; ++i) {
     out_dim.dims[i] = std::max(lhs_tensor->getDimensions().d[i],
                                rhs_tensor->getDimensions().d[i]);
@@ -1507,6 +1557,20 @@ static odla_value reduce(odla_value input, nvinfer1::ReduceOperation op,
   }
 
   auto ret = g_comp->network->addReduce(*input, op, reduce_axes, keep_dims);
+  if (input->type.element_type == ODLA_INT32) {
+    // ret->setOutputType(0, nvinfer1::DataType::kINT32);
+    ret->getOutput(0)->setType(nvinfer1::DataType::kINT32);
+
+    // auto tensor = ret->getOutput(0);
+    // auto type = tensor->getType();
+    // auto name = tensor->getName();
+    // auto out0type = ret->getOutputType(0);
+    // std::cout << name << std::endl;
+    // std::cout << (int)type << std::endl;
+    // std::cout << (int)out0type << std::endl;
+
+    // std::cout << "mrysetint32" << std::endl;
+  }
   return CreateValue(ret, {input->type.element_type, output_dims}, id);
 }
 
@@ -1609,6 +1673,13 @@ odla_value odla_ReduceProd(odla_value input, odla_size_t num_of_axes,
                            const odla_uint32* axes, odla_bool keep_dims,
                            odla_value_shape output_dims,
                            const odla_value_id id) {
+  // const std::string kk((const char*)id);
+  // std::cout << "odla_ReduceProd" << kk << std::endl;
+  // auto input_t = input->tensor;
+  // auto type = input_t->getType();
+  // auto name = input_t->getName();
+  // std::cout << name << std::endl;
+  // std::cout << (int)type << std::endl;
   return reduce(input, nvinfer1::ReduceOperation::kPROD, num_of_axes, axes,
                 keep_dims, output_dims, id);
 }
@@ -1792,12 +1863,35 @@ odla_value odla_DeConv(odla_value input, odla_memory_layout input_layout,
 
 odla_value odla_Concat(odla_values inputs, odla_int32 axis,
                        odla_value_shape output_dims, const odla_value_id id) {
+  // const std::string kk((const char*)id);
+  // std::cout << kk << std::endl;
   int num = inputs.size;
   std::vector<nvinfer1::ITensor*> input_tensors(num);
   for (int i = 0; i < num; ++i) {
     input_tensors[i] = inputs.values[i]->tensor;
-  }
+    auto input_t = inputs.values[i]->tensor;
 
+    // auto type = input_t->getType();
+    // auto name = input_t->getName();
+    // std::cout << name << std::endl;
+    // std::cout << (int)type << std::endl;
+
+    auto input_i_shape = inputs.values[i]->type.shape;
+    if (input_i_shape.size == 0 && input_i_shape.dims[0] == 0) {
+      auto shuffle = g_comp->network->addShuffle(*input_t);
+      shuffle->setReshapeDimensions(GetNVDims({.size = 1, .dims = {1}}));
+      input_t = shuffle->getOutput(0);
+      // input_tensors[i] = input_t;
+      // auto dims_debug = input_tensors[i]->getDimensions();
+      // std::cout << 'a' << std::endl;
+    }
+    input_tensors[i] = input_t;
+    // type = input_tensors[i]->getType();
+    // name = input_tensors[i]->getName();
+    // std::cout << name << std::endl;
+    // std::cout << (int)type << std::endl;
+  }
+  // todo : reshape size 0  addreshape
   auto concat = g_comp->network->addConcatenation(input_tensors.data(), num);
   concat->setAxis(axis);
   odla_value_type output_type{
@@ -1886,14 +1980,44 @@ odla_value odla_AveragePool(odla_value input, odla_memory_layout input_layout,
   return CreateValue(pooling, output_type, value_id);
 }
 
-odla_value odla_Fill(odla_value_type type, odla_fill_method method,
-                     odla_float32 p0, odla_float32 p1, odla_float32 seed,
-                     const odla_value_id value_id) {
+odla_value odla_Fill(odla_value shape, odla_value_type type,
+                     odla_fill_method method, odla_float32 p0, odla_float32 p1,
+                     odla_float32 seed, const odla_value_id value_id) {
   if (method == ODLA_RandomUniform) {
+    // auto fill = g_comp->network->addFill(
+    //     GetNVDims(type.shape), nvinfer1::FillOperation::kRANDOM_UNIFORM);
+    // fill->setAlpha(p0);
+    // fill->setBeta(p1);
+    // return CreateValue(fill, type, value_id);
+
+    // mry
+
+    // nvinfer1::Dims* dims_ptr = nullptr;
+    // auto fill = g_comp->network->addFill(
+    //     *dims_ptr, nvinfer1::FillOperation::kRANDOM_UNIFORM);
+    // fill->setAlpha(p0);
+    // fill->setBeta(p1);
+
+    // odla_value_type runtime_type{
+    //     ODLA_FLOAT32, (odla_value_shape){.size = 3, .dims = {1, 64, 768}}};
+    // auto runtime_nvdims = GetNVDims(runtime_type.shape);
+    // fill->setDimensions(runtime_nvdims);
+    // return CreateValue(fill, type, value_id);
+    // int init_size = 0;
+    nvinfer1::Dims dims{.nbDims = 0};
     auto fill = g_comp->network->addFill(
-        GetNVDims(type.shape), nvinfer1::FillOperation::kRANDOM_UNIFORM);
+        dims, nvinfer1::FillOperation::kRANDOM_UNIFORM);
+
+    // auto fill =
+    //     g_comp->network->addFill(GetNVDims({.size = 0, .dims = {}}),
+    //                              nvinfer1::FillOperation::kRANDOM_UNIFORM);
     fill->setAlpha(p0);
     fill->setBeta(p1);
+    fill->setInput(0, *shape);
+    // odla_value_type runtime_type{
+    //     ODLA_FLOAT32, (odla_value_shape){.size = 3, .dims = {1, 64, 768}}};
+    // auto runtime_nvdims = GetNVDims(runtime_type.shape);
+    // fill->setDimensions(runtime_nvdims);
     return CreateValue(fill, type, value_id);
   }
   assert(0 && "Unsupported fill method");
@@ -2044,6 +2168,35 @@ odla_value odla_Slice(odla_value input, const odla_int32* start,
       g_comp->network->addSlice(*input, GetNVDims(start_dims),
                                 GetNVDims(output_dims), GetNVDims(stride_dims));
   return CreateValue(slice, {input->type.element_type, output_dims}, id);
+}
+
+odla_value odla_SliceDynamic(odla_value input, odla_value start,
+                             odla_value size, odla_value stride,
+                             odla_value_shape output_dims,
+                             const odla_value_id value_id) {
+  const auto& input_dims = input->type.shape;
+  odla_value_shape init_stride_dims;
+  init_stride_dims.size = input_dims.size;
+  for (int i = 0; i < init_stride_dims.size; ++i) {
+    init_stride_dims.dims[i] = 1;
+  }
+  // int init_start = 0;
+  // nvinfer1::Dims start_dims(init_start);
+  nvinfer1::Dims start_dims{.nbDims = 0};
+
+  // int init_size = 0;
+  // nvinfer1::Dims size_dims(init_size);
+  nvinfer1::Dims size_dims{.nbDims = 0};
+
+  nvinfer1::Dims stride_dims(GetNVDims(init_stride_dims));
+  auto slice =
+      g_comp->network->addSlice(*input, start_dims, size_dims, stride_dims);
+  slice->setInput(1, *start);
+  slice->setInput(2, *size);
+  if (stride) {
+    slice->setInput(3, *stride);
+  }
+  return CreateValue(slice, {input->type.element_type, output_dims}, value_id);
 }
 
 odla_value odla_NMS(odla_value boxes, odla_value scores,

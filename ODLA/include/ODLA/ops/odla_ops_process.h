@@ -137,6 +137,7 @@ odla_ExpandDims(odla_value input, odla_value_shape output_dims,
   \p p0 and \p p1 are for the lower and upper bounds, respectively.
   For othere filling methods, \p p0 and \p p1 are ignored.
 
+  \param input the input value
   \param type the type of generated odla_value
   \param method the method for filling the value
   \param p0 mean for normal distribution, or lower bound for uniform
@@ -149,8 +150,9 @@ odla_ExpandDims(odla_value input, odla_value_shape output_dims,
   \return odla_value
 */
 extern ODLA_API_EXPORT odla_value ODLA_API_CALL
-odla_Fill(odla_value_type type, odla_fill_method method, odla_float32 p0,
-          odla_float32 p1, odla_float32 seed, const odla_value_id value_id);
+odla_Fill(odla_value input, odla_value_type type, odla_fill_method method,
+          odla_float32 p0, odla_float32 p1, odla_float32 seed,
+          const odla_value_id value_id);
 
 //! \brief Gather slices
 /*!

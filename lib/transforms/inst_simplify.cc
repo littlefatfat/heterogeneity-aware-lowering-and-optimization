@@ -646,6 +646,13 @@ static std::pair<Def, Def> RunOnCommonReductionInstruction(Instruction* inst) {
           ret = new_inst;
           break;
         }
+        case OpCode::REDUCEPRODUCT: { // mry
+          ReduceProductInst* new_inst = DynCast<ReduceProductInst>(
+              builder.Clone(*inst, {inst->GetOperand(0)}));
+          new_inst->SetAxis(axis);
+          ret = new_inst;
+          break;
+        }
         case OpCode::ARGMAX: {
           ArgmaxInst* new_inst =
               DynCast<ArgmaxInst>(builder.Clone(*inst, {inst->GetOperand(0)}));
@@ -957,7 +964,7 @@ std::pair<Def, Def> InstSimplify::RunOnInstruction(ShapeInst* inst) {
   const auto& type = inst->GetOperand(0).GetType();
 
   Def orig_def{inst, 0};
-  if (!type.IsValid() || type.IsDynamicShape() || type.IsDynamicBatch()) {
+  if (!type.IsValid() || !type.IsStaticShape()) {
     return {orig_def, orig_def};
   }
 
@@ -1609,6 +1616,7 @@ std::pair<Def, Def> InstSimplify::RunOnInstruction(GatherInst* inst) {
   int axis = inst->GetAxis();
   const auto& dst_type = inst->GetResultsTypes()[0];
   const auto& type_op0 = inst->GetOperand(0).GetType();
+  const auto& op0 = inst->GetOperand(0);
   const auto& op1 = inst->GetOperand(1);
   // Gather(data, ZExt(index, int64)) ==> Gather(data, index)
   if (IsA<ZExtInst>(op1)) {
@@ -1631,12 +1639,63 @@ std::pair<Def, Def> InstSimplify::RunOnInstruction(GatherInst* inst) {
 
   for (size_t i = 0; i < inst->GetNumOfOperands(); ++i) {
     if (!IsA<Constant>(inst->GetOperand(i).GetOwner())) {
+      if (i == 0 && IsA<ShapeInst>(op0)) {
+        // ShapeInst is dynamic
+        if (type_op0.IsValid()) {
+          continue;
+        }
+      }
       return {orig_def, orig_def};
     }
   }
 
   if (!dst_type.IsValid()) {
     return {orig_def, orig_def};
+  }
+
+  // mry
+  // if (IsA<ShapeInst>(op0) && type_op0.IsValid() && !IsA<Constant>(op0)) {
+  //   // If all data to be gathered is constant, convert the result to contant.
+  //   Constant* c_op1 = DynCast<Constant>(op1.GetOwner());
+  //   auto gather_len = op1.GetType().GetTotalNumOfElements();
+  //   bool result_is_constant = true;
+  //   std::vector<int64_t> res_constant_data(gather_len);
+
+  //   for (int i = 0; i < gather_len; i++) {
+  //     auto gather_idx = c_op1->GetDataAsInt64(i);
+  //     const auto& shape_i = GetAvailIntegerResult(op0, gather_idx);
+  //     result_is_constant &= shape_i.first;
+  //     res_constant_data[i] = shape_i.second;
+  //   }
+  //   if (result_is_constant) {
+  //     ConstantBuilder cb(inst->GetParent()->GetParent());
+  //     auto c = cb.CreateConstant(inst->GetName(), inst->GetResultType(),
+  //                                res_constant_data.data());
+  //     return {orig_def, *c};
+  //   }
+  //   return {orig_def, orig_def};
+  // }
+
+  if (IsA<ShapeInst>(op0) && type_op0.IsValid() && !IsA<Constant>(op0)) {
+    // If all data to be gathered is constant, convert the result to constant.
+    Constant* c_op1 = DynCast<Constant>(op1.GetOwner());
+    auto gather_len = op1.GetType().GetTotalNumOfElements();
+    bool result_is_constant = true;
+    std::vector<int32_t> res_constant_data(gather_len);
+
+    for (int i = 0; i < gather_len; i++) {
+      auto gather_idx = c_op1->GetDataAsInt64(i);
+      const auto& shape_i = GetAvailIntegerResult(op0, gather_idx);
+      result_is_constant &= shape_i.first;
+      res_constant_data[i] = shape_i.second;
+    }
+    // if (result_is_constant) {
+    ConstantBuilder cb(inst->GetParent()->GetParent());
+    auto c = cb.CreateConstant(inst->GetName(), inst->GetResultType(),
+                               res_constant_data.data());
+    return {orig_def, *c};
+    // }
+    // return {orig_def, orig_def};
   }
 
   Constant* c_op0 = DynCast<Constant>(inst->GetOperand(0).GetOwner());
@@ -1913,8 +1972,11 @@ std::pair<Def, Def> InstSimplify::RunOnInstruction(ConcatInst* inst) {
     return {orig_def, *new_concat};
   }
 
+  // std::vector<Def> gather_ops;
   for (size_t i = 0; i < inst->GetNumOfOperands(); ++i) {
     if (!IsA<Constant>(inst->GetOperand(i).GetOwner())) {
+      // if (IsA<GatherInst>(inst->GetOperand(i).GetOwner())) {
+      // }
       return {orig_def, orig_def};
     }
   }
@@ -2245,7 +2307,10 @@ std::pair<Def, Def> InstSimplify::RunOnInstruction(ReturnInst* inst) {
 std::pair<Def, Def> InstSimplify::RunOnInstruction(RandomUniformInst* inst) {
   Def orig_def{inst, 0};
   const auto& dst_type = inst->GetResultsTypes()[0];
-  if (dst_type.IsValid() && dst_type.GetDataType() == DataType::FLOAT32) {
+  // if (!dst_type.IsStaticShape()) {
+  //   return {orig_def, orig_def};
+  if (dst_type.IsStaticShape() && dst_type.IsValid() &&
+      dst_type.GetDataType() == DataType::FLOAT32) {
     auto noe = dst_type.GetTotalNumOfElements();
     float max_val = inst->GetMaxval();
     float min_val = inst->GetMinval();
@@ -2454,10 +2519,169 @@ static Constant* FoldSliceInst(SliceInst* inst) {
   return builder.CreateConstant(name, slice_type, data.get());
 }
 
+// std::pair<Def, Def> InstSimplify::RunOnInstruction(SliceInst* inst) {
+//   Def orig_def{inst, 0};
+//   auto op_len = inst->GetOperand(2);
+//   const auto& dst_type = inst->GetResultsTypes()[0];
+//   if (dst_type.IsValid() && IsA<Constant>(op_len)) {
+//     Constant* c_size = DynCast<Constant>(op_len);
+//     int dim = op_len.GetType().GetTotalNumOfElements();
+//     std::vector<int> size_adj(dim);
+//     bool new_size = false;
+//     for (int i = 0; i != dim; ++i) {
+//       int64_t size_i = c_size->GetDataAsInt64(i);
+//       int64_t s = dst_type.GetNumOfElementsInDim(i);
+//       if (size_i == -1 && s != -1) {
+//         size_adj[i] = s;
+//         new_size = true;
+//       } else {
+//         size_adj[i] = size_i;
+//       }
+//     }
+//     if (new_size) {
+//       ConstantBuilder cb(inst->GetParent()->GetParent());
+//       Constant* c_new_size = cb.CreateConstant(
+//           op_len.GetOwner()->GetName() + "_adj",
+//           halo::Type{DataType::INT32, op_len.GetType().GetDimSizes()},
+//           size_adj.data());
+//       IRBuilder builder(inst->GetParent());
+//       builder.SetInsertAfter(inst);
+//       SliceInst* new_inst = builder.CreateSlice(
+//           inst->GetName(),
+//           {inst->GetOperand(0), inst->GetOperand(1), *c_new_size});
+//       new_inst->GetResultsTypes()[0] = dst_type;
+//       return {orig_def, *new_inst};
+//     }
+//   }
+//   const auto& op0 = inst->GetOperand(0);
+//   const auto& op_start = inst->GetOperand(1);
+
+//   bool has_constant_steps =
+//       (inst->GetNumOfOperands() < 4 || IsA<Constant>(inst->GetOperand(3)));
+//   has_constant_steps &=
+//       (inst->GetNumOfOperands() <= 4 || IsA<Constant>(inst->GetOperand(4)));
+
+//   bool has_constant_axes =
+//       (inst->GetNumOfOperands() <= 4 || IsA<Constant>(inst->GetOperand(4)));
+
+//   if (IsA<Constant>(op0) && IsA<Constant>(op_start) && IsA<Constant>(op_len)
+//   &&
+//       inst->GetResultType().IsValid() && has_constant_steps &&
+//       has_constant_axes) {
+//     Constant* input = DynCast<Constant>(op0);
+//     const auto& dt = inst->GetResultType();
+//     auto starts = DynCast<Constant>(op_start);
+//     auto lens = DynCast<Constant>(op_len);
+//     auto rank = op0.GetType().GetNumOfDims();
+//     std::unordered_set<int> axes;
+//     if (inst->GetNumOfOperands() > 4) {
+//       const auto& data =
+//           DynCast<Constant>(inst->GetOperand(4))->GetDataAsInt64();
+//       for (auto x : data) {
+//         axes.insert(x);
+//       }
+//     } else {
+//       for (size_t i = 0; i < rank; ++i) {
+//         axes.insert(i);
+//       }
+//     }
+//     bool all_steps_are_one = has_constant_steps;
+//     if (rank == 1 && all_steps_are_one) {
+//       auto idx = starts->GetDataAsInt64(0);
+//       auto len = lens->GetDataAsInt64(0);
+//       Constant* c = nullptr;
+//       switch (dt.GetDataType()) {
+//         case DataType::INT64:
+//           c = GetSlicedConstantDataRankOne<int64_t>(inst, input, idx, len);
+//           break;
+//         case DataType::INT32:
+//           c = GetSlicedConstantDataRankOne<int>(inst, input, idx, len);
+//           break;
+//         case DataType::FLOAT32:
+//           c = GetSlicedConstantDataRankOne<float>(inst, input, idx, len);
+//           break;
+//         default:
+//           break;
+//       }
+//       if (c != nullptr) {
+//         return {orig_def, *c};
+//       }
+//     } else if (auto new_inst = FoldSliceInst(inst)) {
+//       return {orig_def, *new_inst};
+//     }
+//   }
+
+//   // If all data to be sliced is constant, convert the result to contant.
+//   const Constant* c_start = DynCast<Constant>(inst->GetOperand(1));
+//   const Constant* c_len = DynCast<Constant>(inst->GetOperand(2));
+//   const auto& ret_type = inst->GetResultType();
+//   if (c_start != nullptr && c_len != nullptr && ret_type.IsValid() &&
+//       ret_type.GetNumOfDims() <= 1) {
+//     // so far only support simple case (input is 1-D).
+//     auto from = c_start->GetDataAsInt64(0);
+//     auto len = c_len->GetDataAsInt64(0);
+//     bool is_constant = true;
+//     std::vector<int64_t> data(len);
+//     for (int64_t i = 0; i < len && is_constant; ++i) {
+//       const auto& c = GetAvailIntegerResult(op0, from + i);
+//       is_constant &= c.first;
+//       data[i] = c.second;
+//     }
+//     if (is_constant) {
+//       ConstantBuilder cb(inst->GetParent()->GetParent());
+//       auto c = cb.CreateConstant(inst->GetName(), inst->GetResultType(),
+//                                  data.data());
+//       return {orig_def, *c};
+//     }
+//   }
+//   return {orig_def, orig_def};
+// }
+
+// mry
 std::pair<Def, Def> InstSimplify::RunOnInstruction(SliceInst* inst) {
   Def orig_def{inst, 0};
   auto op_len = inst->GetOperand(2);
   const auto& dst_type = inst->GetResultsTypes()[0];
+  if (!dst_type.IsStaticShape()) {
+    IRBuilder builder(inst->GetParent());
+    builder.SetInsertAfter(inst);
+    ConstantBuilder cb(inst->GetParent()->GetParent());
+
+    auto input = inst->GetOperand(0);
+    ShapeInst* shape_input =
+        builder.CreateShape(inst->GetName() + "_inputshape", input);
+
+    std::vector<Def> concat_operands;
+    const halo::Type size_i_type{DataType::INT64, {1}};
+    int64_t size_len = 1;
+    Constant* c_len = cb.CreateConstant(inst->GetName() + "_size_len",
+                                        size_i_type, &size_len);
+    int dim = dst_type.GetNumOfDims(); // 3
+    for (int i = 0; i != dim; ++i) {
+      int64_t dim_i = dst_type.GetNumOfElementsInDim(i);
+      if (dim_i == -1) {
+        int64_t start = i;
+        Constant* shape_slice_start = cb.CreateConstant(
+            inst->GetName() + "_size_" + std::to_string(i) + "_start",
+            size_i_type, &start);
+        auto slice_i =
+            builder.CreateSlice(inst->GetName() + "_size_" + std::to_string(i),
+                                {*shape_input, *shape_slice_start, *c_len});
+        concat_operands.push_back(*slice_i);
+      } else {
+        Constant* c_i =
+            cb.CreateConstant(inst->GetName() + "_size_" + std::to_string(i),
+                              size_i_type, &dim_i);
+        concat_operands.push_back(*c_i);
+      }
+    }
+    auto dynamic_size = builder.CreateConcat(inst->GetName() + "_dynamic_size",
+                                             concat_operands);
+    auto new_slice = builder.CreateSliceDynamic(
+        inst->GetName(),
+        {inst->GetOperand(0), inst->GetOperand(1), *dynamic_size});
+    return {orig_def, *new_slice};
+  }
   if (dst_type.IsValid() && IsA<Constant>(op_len)) {
     Constant* c_size = DynCast<Constant>(op_len);
     int dim = op_len.GetType().GetTotalNumOfElements();
