@@ -212,6 +212,7 @@ class GenericCXXCodeGen : public CodeGen {
   virtual void RunOnInstruction(TransposeInst*) override;
   virtual void RunOnInstruction(TFIDFVectorizeInst*) override;
   virtual void RunOnInstruction(TileInst*) override;
+  virtual void RunOnInstruction(TileDynamicInst*) override;
   virtual void RunOnInstruction(ZExtInst*) override;
   virtual void RunOnInstruction(HgEngineInst*) override;
   virtual void RunOnInstruction(HgQuantInst*) override;

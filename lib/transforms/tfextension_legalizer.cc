@@ -212,30 +212,58 @@ static std::vector<Def> ConvertExpandDims(const TFExtensionInst* ext,
 static std::vector<Def> ConvertFill(const TFExtensionInst* ext,
                                     IRBuilder* builder) {
   HLCHECK(ext->GetNumOfOperands() == 2);
-  auto dims = ext->GetOperand(0);
-  auto value = ext->GetOperand(1);
+  const auto& dims = ext->GetOperand(0);
+  const auto& value = ext->GetOperand(1);
+
   // mry
   if (!IsA<Constant>(value)) {
     return {};
   }
+
   if (!IsA<Constant>(dims)) {
     auto& dims_type = dims.GetType();
+    auto& value_type = value.GetType();
     if (dims_type.IsValid()) {
-      // int rank = dims_type.GetTotalNumOfElements();
-      // ret_shape.resize(rank);
-      // for (int i = 0; i < rank; ++i) {
-      //   const auto& r = GetAvailIntegerResult(dims, i);
-      //   ret_shape[i] = r.second;
-
-      DataType value_dt = value.GetType().GetDataType();
       builder->SetInsertAfter(ext);
-      auto randomuniform_inst =
-          builder->CreateRandomUniform(ext->GetName() + "_fill_ones", dims);
-      randomuniform_inst->SetDtype(value_dt);
-      randomuniform_inst->SetMinval(1.0);
-      randomuniform_inst->SetMaxval(1.0);
-      auto new_inst = builder->CreateMul(ext->GetName() + "_fill_mul", value,
-                                         *randomuniform_inst);
+      ConstantBuilder cb(ext->GetParent()->GetParent());
+
+      Constant* value_c = DynCast<Constant>(value.GetOwner());
+      DataType value_dt =
+          FindAttributeValue<DataType>(*ext, "dtype", DataType::INVALID);
+      value_dt =
+          (value_dt == DataType::INVALID) ? value_type.GetDataType() : value_dt;
+
+      auto rank = dims_type.GetTotalNumOfElements();
+      std::vector<int64_t> constant_dims(rank, 1);
+
+      Type new_type(value_dt, constant_dims);
+      Constant* new_value_c = nullptr;
+
+      switch (value_dt) {
+        case DataType::INT32: {
+          std::vector<int32_t> data(1, value_c->GetData<int32_t>(0));
+          new_value_c = cb.CreateConstant(ext->GetName() + "_value_constant",
+                                          new_type, data.data());
+          break;
+        }
+        case DataType::FLOAT32: {
+          std::vector<float> data(1, value_c->GetData<float>(0));
+          new_value_c = cb.CreateConstant(ext->GetName() + "_value_constant",
+                                          new_type, data.data());
+          break;
+        }
+        case DataType::INT64: {
+          std::vector<int64_t> data(1, value_c->GetData<int64_t>(0));
+          new_value_c = cb.CreateConstant(ext->GetName() + "_value_constant",
+                                          new_type, data.data());
+          break;
+        }
+        default:
+          HLCHECK(0 && "Unimplemented data type.");
+      }
+
+      auto new_inst =
+          builder->CreateTileDynamic(ext->GetName(), *new_value_c, dims);
       return {*new_inst};
     }
     return {};
@@ -590,25 +618,51 @@ static std::vector<Def> ConvertMerge(const TFExtensionInst* ext,
 
 static std::vector<Def> ConvertZerosLike(const TFExtensionInst* ext,
                                          IRBuilder* builder) {
-  const auto& op0_type = ext->GetOperand(0).GetType();
+  const auto& op0 = ext->GetOperand(0); // op0 dims(shape)
+  const auto& op0_type = op0.GetType();
   if (!op0_type.IsValid()) {
     return {};
   }
   if (!op0_type.IsStaticShape()) {
+    ConstantBuilder cb(ext->GetParent()->GetParent());
     builder->SetInsertAfter(ext);
-    auto zeroslike_shape_inst = builder->CreateShape(
-        ext->GetName() + "_fill_zeros_shape", ext->GetOperand(0));
+    auto zeroslike_shape_inst =
+        builder->CreateShape(ext->GetName() + "_shape", op0);
 
-    auto zerosfill_inst = builder->CreateRandomUniform(
-        ext->GetName() + "_fill_zeros", *zeroslike_shape_inst);
-    // Todo:f32 int64
-    auto attr = ext->GetAttributes()[0].get();
-    HLCHECK(attr->GetName() == "dtype");
-    const auto& dst_type = attr->GetValueAsEnumDataType();
-    zerosfill_inst->SetDtype(dst_type);
-    zerosfill_inst->SetMinval(0);
-    zerosfill_inst->SetMaxval(0);
-    return {*zerosfill_inst};
+    DataType value_dt =
+        FindAttributeValue<DataType>(*ext, "dtype", DataType::INVALID);
+    value_dt =
+        (value_dt == DataType::INVALID) ? op0_type.GetDataType() : value_dt;
+    auto zeros_rank = op0_type.GetNumOfDims();
+    std::vector<int64_t> zeros_constant_dims(zeros_rank, 1);
+    Type new_type(value_dt, zeros_constant_dims);
+    Constant* zeros_constant = nullptr;
+    switch (value_dt) {
+      case DataType::INT32: {
+        std::vector<int32_t> data(1);
+        zeros_constant = cb.CreateConstant(ext->GetName() + "_zero_constant",
+                                           new_type, data.data());
+        break;
+      }
+      case DataType::FLOAT32: {
+        std::vector<float> data(1);
+        zeros_constant = cb.CreateConstant(ext->GetName() + "_zero_constant",
+                                           new_type, data.data());
+        break;
+      }
+      case DataType::INT64: {
+        std::vector<int64_t> data(1);
+        zeros_constant = cb.CreateConstant(ext->GetName() + "_zero_constant",
+                                           new_type, data.data());
+        break;
+      }
+      default:
+        HLCHECK(0 && "Unimplemented data type.");
+    }
+
+    auto zeros_like_inst = builder->CreateTileDynamic(
+        ext->GetName(), *zeros_constant, *zeroslike_shape_inst);
+    return {*zeros_like_inst};
   }
   DataType vt = FindAttributeValue<DataType>(*ext, "dtype", DataType::INVALID);
   vt = (vt == DataType::INVALID) ? op0_type.GetDataType() : vt;
