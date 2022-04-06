@@ -94,6 +94,7 @@ struct CXXCodeGenOpts {
   bool fuse_conv_relu = false;
   bool fuse_fully_connected = true;
   bool fuse_mul_to_conv = true;
+  bool fuse_layernorm = false;
   bool enable_anole_device = false;
   int64_t ipu_num = 1;
   int64_t batches_per_step = 1;
@@ -105,6 +106,7 @@ struct CXXCodeGenOpts {
   bool emit_header = false;
   bool emit_obj = false;
   bool emit_shared_lib = false;
+  bool emit_pb_file = false;
   const char* linked_odla_lib = nullptr;
   const char* template_file = nullptr;
   bool save_temps = false;
